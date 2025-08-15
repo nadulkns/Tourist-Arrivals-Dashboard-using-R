@@ -1,0 +1,424 @@
+---
+title: "Tourist Arrivals in Sri Lanka (2022-2024)"
+output: 
+  flexdashboard::flex_dashboard:
+    orientation: rows
+    vertical_layout: fill
+---
+
+```{r setup, include=FALSE}
+library(flexdashboard)
+library(readxl)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(plotly)
+library(leaflet)
+library(scales)
+library(viridis)
+library(RColorBrewer)
+library(countrycode)
+
+theme_set(theme_minimal())
+```
+
+```{r data-processing}
+MONTH_LEVELS <- c("January", "February", "March", "April", "May", "June",
+                  "July", "August", "September", "October", "November", "December")
+
+read_and_pivot <- function(path, year) {
+  read_xlsx(path) %>%
+    mutate(Year = year) %>%
+    select(-any_of("Total")) %>%  
+    mutate(across(all_of(MONTH_LEVELS), as.numeric)) %>%
+    pivot_longer(cols = all_of(MONTH_LEVELS), 
+                 names_to = "Month", 
+                 values_to = "Arrivals") %>%
+    filter(!is.na(Arrivals)) %>%  
+    mutate(Month = factor(Month, levels = MONTH_LEVELS, ordered = TRUE))
+}
+
+arrivals <- bind_rows(
+  read_and_pivot("data/Tourist Arrivals - 2022.xlsx", 2022),
+  read_and_pivot("data/Tourist Arrivals - 2023.xlsx", 2023),
+  read_and_pivot("data/Tourist Arrivals - 2024.xlsx", 2024)
+)
+
+
+summary_stats <- list(
+  total_arrivals = sum(arrivals$Arrivals),
+  
+  yearly_totals = arrivals %>%
+    group_by(Year) %>%
+    summarise(Total = sum(Arrivals), .groups = "drop"),
+  
+  monthly_averages = arrivals %>%
+    group_by(Month) %>%
+    summarise(AverageArrivals = mean(Arrivals), .groups = "drop"),
+  
+  country_totals = arrivals %>%
+    filter(!is.na(Country)) %>%
+    group_by(Country) %>%
+    summarise(Total = sum(Arrivals), .groups = "drop") %>%
+    arrange(desc(Total))
+)
+
+
+total_arrivals <- sum(arrivals$Arrivals)
+
+peak_year <- arrivals %>%
+  group_by(Year) %>%
+  summarise(Total = sum(Arrivals), .groups = "drop") %>%
+  slice_max(Total, n = 1)
+
+peak_month <- arrivals %>%
+  group_by(Month) %>%
+  summarise(Average = mean(sum(Arrivals)/3), .groups = "drop") %>%
+  slice_max(Average, n = 1)
+
+offpeak_month <- arrivals %>%
+  group_by(Month) %>%
+  summarise(Average = mean(sum(Arrivals)/3), .groups = "drop") %>%
+  slice_min(Average, n = 1)
+
+top_country <- arrivals %>%
+  group_by(Country) %>%
+  summarise(Total = sum(Arrivals), .groups = "drop") %>%
+  slice_max(Total, n = 1)
+
+lowest_country <- arrivals %>%
+  group_by(Country) %>%
+  summarise(Total = sum(Arrivals), .groups = "drop") %>%
+  filter(Total > 0) %>%
+  slice_min(Total, n = 1)
+
+```
+
+# Overview
+
+## Row 1
+
+### Total Arrivals
+```{r}
+valueBox(
+  value = comma(total_arrivals),
+  caption = "Total Tourist Arrivals (2022-2024)",
+  icon = "fa-plane",
+  color = "orange"
+)
+```
+
+### Peak Year
+```{r}
+valueBox(
+  value = comma(peak_year$Total[1]),
+  caption = paste("Highest Year:", peak_year$Year[1]),
+  icon = "fa-calendar",
+  color = "green"
+)
+```
+
+## Row 2
+
+### Peak Month
+```{r}
+valueBox(
+  value = comma(round(peak_month$Average[1])),
+  caption = paste("Best Month (Avg):", peak_month$Month[1]),
+  icon = "fa-arrow-up",
+  color = "lightgreen"
+)
+```
+
+### Off Peak Month
+```{r}
+valueBox(
+  value = comma(round(offpeak_month$Average[1])),
+  caption = paste("Lowest Month (Avg):", offpeak_month$Month[1]),
+  icon = "fa-arrow-down",
+  color = "lightblue"
+)
+```
+
+## Row 3
+### Top Source
+```{r}
+valueBox(
+  value = comma(top_country$Total[1]),
+  caption = paste("Top Country:", top_country$Country[1]),
+  icon = "fa-medal",
+  color = "purple"
+)
+```
+
+### Lowest Source
+```{r}
+valueBox(
+  value = comma(lowest_country$Total[1]),
+  caption = paste("Lowest Country:", lowest_country$Country[1]),
+  icon = "fa-triangle-exclamation",
+  color = "red"
+)
+```
+
+## Row 4
+
+### 
+```{r}
+
+yearly_trends <- arrivals %>%
+  group_by(Year) %>%
+  summarise(TotalArrivals = sum(Arrivals), .groups = "drop")
+
+year_colors <- viridis(n = nrow(yearly_trends), option = "plasma", alpha = 0.6)
+
+
+plot <- ggplot(yearly_trends, aes(x = factor(Year), y = TotalArrivals, 
+                                        fill = factor(Year),
+                                        text = paste("Year:", Year,
+                                                     "<br>Total Arrivals:", scales::comma(TotalArrivals)))) +
+  geom_col(color = "black", size = 0.3) +
+  scale_fill_manual(values = year_colors, name = "Year") +
+  labs(title = "Tourist Arrivals by Year",
+       x = "Year", 
+       y = "Total Arrivals") +
+  scale_y_continuous(labels = scales::comma) +
+  theme_minimal(base_size = 14) +
+  theme(
+    axis.text.x = element_text(angle = 0, hjust = 0.5, face = "bold"),
+    plot.title = element_text(face = "bold", size = 16)
+  )
+
+
+ggplotly(plot, tooltip = "text")
+
+```
+
+
+# Seasonal Patterns
+
+column{.tabset}
+----------------------------------------------
+
+
+### **Monthly Trends by Year**
+```{r}
+
+monthly_trends <- arrivals %>%
+  group_by(Year, Month) %>%
+  summarise(TotalArrivals = sum(Arrivals), .groups = "drop")
+
+plot <- ggplot(monthly_trends, aes(x = Month, y = TotalArrivals, 
+                                        color = factor(Year), group = Year)) +
+  geom_line(linewidth = 1.2, alpha = 0.8) +
+  geom_point(size = 2, alpha = 0.7) +
+  labs(title = "Monthly Tourist Arrivals by Year",
+       subtitle = "Seasonal patterns and year-over-year comparison",
+       x = "Month", 
+       y = "Total Arrivals",
+       color = "Year") +
+  scale_y_continuous(labels = label_comma()) +
+  scale_x_discrete(labels = function(x) substr(x, 1, 3)) +  
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+ggplotly(plot, tooltip = c("x", "y", "colour"))
+```
+
+
+### **Average Monthly Tourist Arrivals**
+```{r}
+
+seasonal_pattern <- arrivals %>%
+  group_by(Month) %>%
+  summarise(AverageArrivals = mean(sum(Arrivals)/3, na.rm = TRUE), .groups = "drop")
+
+
+plot <- ggplot(seasonal_pattern, aes(x = Month, y = AverageArrivals, group = 1)) +
+  geom_line(color = "#2E86C1", linewidth = 1.2) +
+  geom_point(color = "#1F618D", size = 3) +
+  scale_y_continuous(labels = scales::comma) +
+  scale_x_discrete(labels = function(x) substr(x, 1, 3)) +
+  labs(title = "Average Monthly Tourist Arrivals",
+       subtitle = "Seasonal patterns across all years",
+       x = "Month", y = "Average Arrivals") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+ggplotly(plot, tooltip = c("x", "y"))
+
+```
+
+
+
+
+```{r}
+
+
+top_countries <- function(data,year){
+
+  top_countries_year <- data %>%
+    filter(Year == year, !is.na(Country), !is.na(Arrivals)) %>%
+    group_by(Country) %>%
+    summarise(TotalArrivals = sum(Arrivals), .groups = "drop") %>%
+    arrange(desc(TotalArrivals)) %>%
+    slice_head(n = 10)
+  
+  plot <- ggplot(top_countries_year, 
+                        aes(x = reorder(Country, TotalArrivals), y = TotalArrivals, 
+                            fill = Country, text = paste("Country:", Country, 
+                                                         "<br>Arrivals:",comma(TotalArrivals)))) +
+    geom_col(show.legend = FALSE, alpha = 0.8) +
+    coord_flip() +
+    scale_y_continuous(labels = label_comma()) +
+    scale_fill_viridis_d(option = "plasma", guide = "none") +
+    labs(title = paste("Top 10 Source Countries",year),
+         subtitle = "Total tourist arrivals by country of origin",
+         x = "Country", 
+         y = "Total Arrivals")
+  
+  ggplotly(plot, tooltip = "text")
+}
+```
+
+# Tourist Arrivals by Country 
+
+
+column{.tabset}
+----------------------------------------------
+
+
+### **Top 10 Source Countries in 2022**
+```{r}
+top_countries(arrivals,2022)
+```
+
+### **Top 10 Source Countries in 2023** 
+```{r}
+top_countries(arrivals,2023)
+```
+
+### **Top 10 Source Countries in 2024** 
+```{r}
+top_countries(arrivals,2024)
+```
+
+
+
+
+
+```{r}
+top_countries_monthly_line <- function(data, year) {
+  
+
+  top_countries_list <- data %>%
+    filter(Year == year, !is.na(Country), !is.na(Arrivals)) %>%
+    group_by(Country) %>%
+    summarise(TotalArrivals = sum(Arrivals), .groups = "drop") %>%
+    arrange(desc(TotalArrivals)) %>%
+    slice_head(n = 10) %>%
+    pull(Country)
+  
+  
+  monthly_data <- data %>%
+    filter(Year == year, Country %in% top_countries_list) %>%
+    group_by(Month, Country) %>%
+    summarise(MonthlyArrivals = sum(Arrivals), .groups = "drop") %>%
+    mutate(MonthNum = match(Month, month.name)) 
+  
+  country_colors <- brewer.pal(n = 10, name = "Set3")
+  
+
+  plot <- ggplot(monthly_data, 
+                         aes(x = MonthNum, y = MonthlyArrivals, 
+                             color = Country, group = Country,
+                             text = paste("Country:", Country,
+                                          "<br>Month:", Month,
+                                          "<br>Arrivals:", comma(MonthlyArrivals)))) +
+    geom_line(size = 1) +
+    geom_point(size = 2) +
+    scale_x_continuous(breaks = 1:12, labels = month.name) +
+    scale_y_continuous(labels = scales::comma) +
+    scale_color_manual(values = country_colors) +
+    labs(title = paste("Monthly Arrivals of Top 10 Countries -", year),
+         x = "Month", y = "Arrivals", color = "Country") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+  
+  ggplotly(plot, tooltip = "text")
+}
+
+
+```
+
+# Monthly Top 10 Countries
+
+column{.tabset}
+----------------------------------------------
+
+### **Monthly Arrivals of Top 10 Countries in 2022**
+```{r}
+top_countries_monthly_line(arrivals, 2022)
+```
+
+### **Monthly Arrivals of Top 10 Countries in 2023**
+```{r}
+top_countries_monthly_line(arrivals, 2023)
+```
+
+### **Monthly Arrivals of Top 10 Countries in 2024**
+```{r}
+top_countries_monthly_line(arrivals, 2024)
+```
+
+
+
+
+```{r}
+
+continent_arrivals_plot <- function(data, year) {
+  
+  continent_data <- data %>%
+    filter(Year == year, !is.na(Country)) %>%
+    mutate(Continent = countrycode(Country, origin = "country.name", destination = "continent")) %>%
+    drop_na(Continent) %>%
+    group_by(Continent) %>%
+    summarise(TotalArrivals = sum(Arrivals), .groups = "drop") %>%
+    arrange(desc(TotalArrivals))
+  
+  plot <- ggplot(continent_data,
+                 aes(x = reorder(Continent, TotalArrivals),
+                     y = TotalArrivals,
+                     fill = Continent,
+                     text = paste("Continent:", Continent,
+                                  "<br>Arrivals:", comma(TotalArrivals)))) +
+    geom_col(show.legend = FALSE) +
+    coord_flip() +
+    scale_y_continuous(labels = comma) +
+    scale_fill_viridis_d(option = "plasma") +
+    labs(title = paste("Tourist Arrivals by Continent -", year),
+         x = "Continent", y = "Total Arrivals") +
+    theme_minimal()
+  
+  ggplotly(plot, tooltip = "text")
+}
+
+```
+
+# Tourist Arrivals by Continent
+
+column{.tabset}
+----------------------------------------------
+
+### **Tourist Arrivals by Continent in 2022**
+```{r}
+continent_arrivals_plot(arrivals, 2022)
+```
+
+### **Tourist Arrivals by Continent in 2023**
+```{r}
+continent_arrivals_plot(arrivals, 2023)
+```
+
+### **Tourist Arrivals by Continent in 2024**
+```{r}
+continent_arrivals_plot(arrivals, 2024)
+```
